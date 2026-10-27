@@ -117,6 +117,13 @@ nav.jump a{color:var(--accent);text-decoration:none;border-bottom:1px solid curr
 .pdsc:hover{border-color:var(--line)}
 .pdsc:focus{border-color:var(--accent);background:var(--bg);outline:none}
 .pdsc::placeholder{color:var(--muted)}
+.pi.draft{padding:10px 12px 10px 28px;border:1px dashed var(--accent);border-radius:8px;background:color-mix(in srgb,var(--accent) 6%,transparent)}
+.pi.draft::before{left:12px;top:21px}
+.pi.draft .pp{left:8px;top:15px}
+.dacts{display:flex;align-items:center;gap:8px;margin:8px 0 0 18px;flex-wrap:wrap}
+.dnote{flex:1 1 180px;font-size:12.5px;color:var(--muted);min-width:0}
+.dnote.bad{color:var(--warn)}
+.dacts button{font-size:12.5px;padding:4px 12px}
 .padd{align-self:flex-start;font-size:12.5px;padding:3px 10px;color:var(--muted);margin-left:16px}
 .rtl{font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin-top:6px}
 .dayact{display:flex;gap:8px;flex-wrap:wrap}
@@ -202,7 +209,7 @@ body::before{content:"";position:fixed;inset:0 0 auto;height:env(safe-area-inset
       <p id="span"></p>
       <div class="ctl1">
         <label class="il" for="start">Starts<input type="date" id="start"></label>
-        <div class="il">Days<div class="seg"><button type="button" id="dayminus" aria-label="Remove last day">−</button><span id="daycount">7</span><button type="button" id="dayplus" aria-label="Add a day">+</button></div></div>
+        <label class="il" for="end">Ends<input type="date" id="end"></label>
       </div>
       <div class="status" id="status" role="status"></div>
     </div>
@@ -257,9 +264,10 @@ function apply(day,nb){
   out.push(nb);day.blocks=out.filter(b=>b.e-b.s>0.01);
 }
 
+const iso=dt=>dt.toISOString().slice(0,10);
 function renderHeader(){
   const n=S.days.length,a=dateOf(0),z=dateOf(n-1);
-  if(document.activeElement!==$("ttl"))$("ttl").value=S.title||"";$("daycount").textContent=n;document.title=(S.title||"Trip")+" · Trip Planner";
+  if(document.activeElement!==$("ttl"))$("ttl").value=S.title||"";$("end").value=iso(z);$("end").min=S.start;document.title=(S.title||"Trip")+" · Trip Planner";
   $("span").textContent=`${MON[a.getUTCMonth()]} ${a.getUTCDate()} – ${MON[z.getUTCMonth()]} ${z.getUTCDate()}, ${z.getUTCFullYear()} · ${n} day${n===1?"":"s"}`;
   if($("start"))$("start").value=S.start;
 }
@@ -315,15 +323,97 @@ function rerenderPlan(id,attr){renderDays();renderBoard();renderLegend();
 function planChange(pi,t){
   const [d,b]=planBlock(pi);if(!b)return;
   const attr=t.dataset.ps!=null?"data-ps":t.dataset.pe!=null?"data-pe":"data-pp";
+  let lost=[];
   if(attr==="data-pp"){b.p=t.value;}
   else{
     let s=+pi.querySelector("[data-ps]").value,e=+pi.querySelector("[data-pe]").value;const len=b.e-b.s;
-    if(e<=s){if(attr==="data-ps")e=Math.min(H1,s+len);else s=Math.max(H0,e-len);}
+    // a new start time moves the row and keeps its length; a new end time resizes it
+    if(attr==="data-ps"){e=Math.min(H1,s+len);if(e-s<0.25){s=Math.max(H0,H1-len);e=H1;}}
+    else if(e<=s){s=Math.max(H0,e-len);}
     if(e<=s)e=Math.min(H1,s+0.25);
+    const before=d.blocks.filter(x=>x.id!==b.id&&shown(x));
     apply(d,{...b,s,e});
+    lost=before.filter(x=>!d.blocks.some(y=>y.id===x.id));
   }
   changed(true);rerenderPlan(b.id,attr);
+  if(lost.length)setStatus(`Replaced ${lost.map(x=>"“"+(x.label||place(x.p).name)+"”").join(", ")} · Ctrl+Z to undo`,true);
 }
+/* where "+ Add time" puts a new 1-hour row: after the last plan, else in the first free gap, else before the first plan */
+function freeSlot(d){
+  const occ=sorted(d).filter(b=>shown(b)&&!/^hotel$/i.test(b.label||""));
+  if(!occ.length)return {s:9,e:10};
+  const last=occ[occ.length-1];
+  if(last.e<=H1-0.5)return {s:last.e,e:Math.min(H1,last.e+1),after:last};
+  for(let k=0;k+1<occ.length;k++){const a=occ[k].e,z=occ[k+1].s;if(z-a>=0.5)return {s:a,e:Math.min(z,a+1),after:occ[k]};}
+  const first=occ[0];
+  if(first.s-H0>=0.5)return {s:Math.max(H0,first.s-1),e:first.s};
+  return {s:9,e:10,full:true,after:last};
+}
+/* ---------- new-row drafts: nothing touches the schedule until Confirm ---------- */
+let drafts={};
+const isFiller=b=>/^hotel$/i.test(b.label||"")&&!b.desc;
+/* place nb on the day; anything it overlaps is pushed later (and anything that then overlaps, too).
+   Plain "Hotel" filler isn't pushed, it just fills whatever time is left. */
+function pushPlan(d,nb){
+  const out=[],moved=[];let cursor=nb.e;
+  for(const b0 of sorted(d).filter(b=>!isFiller(b))){
+    const b={...b0};
+    if(b.e<=nb.s+1e-9){out.push(b);continue;}
+    if(b.s<cursor-1e-9){const sh=cursor-b.s;b.s+=sh;b.e+=sh;moved.push(b);}
+    if(b.s>=nb.e-1e-9||moved.includes(b))cursor=Math.max(cursor,b.e);
+    out.push(b);
+  }
+  const over=moved.filter(b=>b.e>H1+1e-9);
+  if(over.length)return {ok:false,over};
+  out.push({...nb});
+  // refill plain Hotel time around the result
+  const taken=out.map(b=>[b.s,b.e]).sort((a,b)=>a[0]-b[0]);
+  for(const h of sorted(d).filter(isFiller)){
+    let pieces=[[h.s,h.e]];
+    for(const [a,z] of taken){pieces=pieces.flatMap(([x,y])=>(z<=x||a>=y)?[[x,y]]:[[x,Math.min(y,a)],[Math.max(x,z),y]].filter(([p,q])=>q-p>=0.25));}
+    pieces.forEach(([x,y],k)=>out.push({...h,s:x,e:y,id:k?"b"+(++S.seq):h.id}));
+  }
+  return {ok:true,blocks:out,moved};
+}
+/* the Ends date sets how many days the trip has; extra days are added empty, cut days are removed (Ctrl+Z brings them back) */
+function setEnd(t){
+  const [y,m,d]=S.start.split("-").map(Number),[y2,m2,d2]=(t.value||"").split("-").map(Number);
+  if(!t.value){renderHeader();return;}
+  const n=Math.round((Date.UTC(y2,m2-1,d2)-Date.UTC(y,m-1,d))/864e5)+1;
+  if(n<1){setStatus("The end date can't be before the start date",true);renderHeader();return;}
+  if(n>365){setStatus("That's more than a year — pick an earlier end date",true);renderHeader();return;}
+  if(n===S.days.length)return;
+  const cut=S.days.slice(n).filter(x=>x.blocks.length||x.notes||x.html||x.title).length;
+  if(n>S.days.length)while(S.days.length<n)S.days.push({notes:"",blocks:[]});
+  else{for(let k=n;k<S.days.length;k++)delete drafts[k];S.days.length=n;if(sel.d>=n){sel.d=-1;sel.id=null;}}
+  changed(true);renderAll();
+  if(cut)setStatus(`Removed ${cut} day${cut>1?"s":""} with plans · Ctrl+Z to undo`,true);
+}
+function newDraft(i){const d=S.days[i],slot=freeSlot(d),lb=slot.after;
+  return {s:slot.s,e:slot.e,label:"",desc:"",p:(lb&&!TRANSIT.has(lb.p))?lb.p:(stays(d).slice(-1)[0]||defPlace(i))};}
+function draftNote(i){const dr=drafts[i];if(!dr)return {t:"",bad:false};
+  const r=pushPlan(S.days[i],{id:"_draft",...dr});
+  if(!r.ok)return {t:`Not enough room before midnight to move ${r.over.map(b=>"“"+(b.label||place(b.p).name)+"”").join(", ")} — pick another time`,bad:true};
+  if(!r.moved.length)return {t:"",bad:false};
+  return {t:"Will move later: "+r.moved.map(b=>`${b.label||place(b.p).name} → ${fmt12(b.s)}`).join(", "),bad:false};}
+function draftItem(i){const dr=drafts[i],p=place(dr.p),n=draftNote(i);
+  return `<li class="pi draft" data-dd="${i}" style="--pc:${p.color}">
+    <div class="pr">
+      <select class="pt" data-ds aria-label="Start time">${topts(H0,H1-0.25,dr.s)}</select><span class="dash">–</span>
+      <select class="pt" data-de aria-label="End time">${topts(H0+0.25,H1,dr.e)}</select>
+      <input class="pl" data-dl type="text" value="${esc(dr.label)}" placeholder="Title on the schedule" aria-label="Title shown on the schedule">
+      <select class="pp" data-dp aria-label="Place (sets the color)" title="Change place">${S.places.map(x=>`<option value="${x.id}"${x.id===dr.p?" selected":""}>${esc(x.name)}</option>`).join("")}</select>
+    </div>
+    <textarea class="pdsc" data-ddesc rows="1" placeholder="What you'll do" aria-label="What you'll do">${esc(dr.desc)}</textarea>
+    <div class="dacts"><span class="dnote${n.bad?" bad":""}" data-dnote>${esc(n.t)}</span><button type="button" data-dcancel>Cancel</button><button type="button" class="primary" data-dconfirm${n.bad?" disabled":""}>Confirm</button></div>
+  </li>`;}
+function refreshDraftNote(li){const i=+li.dataset.dd,n=draftNote(i),el=li.querySelector("[data-dnote]");el.textContent=n.t;el.classList.toggle("bad",n.bad);li.querySelector("[data-dconfirm]").disabled=n.bad;}
+function confirmDraft(i){const dr=drafts[i],d=S.days[i];if(!dr||!d)return;
+  const nb={id:"b"+(++S.seq),p:dr.p,s:dr.s,e:dr.e,label:dr.label.trim()||undefined,desc:dr.desc.trim()?dr.desc:undefined};
+  const r=pushPlan(d,nb);if(!r.ok){setStatus("Not enough room before midnight — pick another time",true);return;}
+  d.blocks=r.blocks;delete drafts[i];changed(true);renderDays();renderBoard();renderLegend();
+  if(r.moved.length)setStatus(`Added · moved ${r.moved.map(b=>"“"+(b.label||place(b.p).name)+"”").join(", ")} later · Ctrl+Z to undo`);
+  focusBlock(i,nb.id,false);}
 function dayCard(i){
   const d=S.days[i],dt=dateOf(i),bl=sorted(d),st=stays(d);
   const title=st.length?st.map(id=>place(id).name).join(" → "):(bl.some(b=>b.p==="flight")?"Travel day":"Free day");
@@ -333,7 +423,7 @@ function dayCard(i){
     <div class="date"><span class="dow">${DOW[dt.getUTCDay()]}</span><span class="dn">${dt.getUTCDate()}</span><span class="mo">${MON[dt.getUTCMonth()]}</span><span class="ix">Day ${i+1}</span></div>
     <h3><input class="dt" type="text" id="title-${i}" data-title="${i}" value="${esc(d.title||title)}" placeholder="${esc(title)}" aria-label="Title for ${DOW[dt.getUTCDay()]} ${MON[dt.getUTCMonth()]} ${dt.getUTCDate()}"></h3>
     <div><div class="bar">${bar}</div><div class="moves">${moves}</div></div>
-    <div style="display:flex;flex-direction:column;gap:6px;min-width:0"><ol class="plan">${bl.filter(shown).map(b=>planItem(i,b)).join("")}</ol><button type="button" class="padd" data-padd="${i}">+ Add time</button></div>
+    <div style="display:flex;flex-direction:column;gap:6px;min-width:0"><ol class="plan">${bl.filter(shown).map(b=>planItem(i,b)).join("")}${drafts[i]?draftItem(i):""}</ol><button type="button" class="padd" data-padd="${i}"${drafts[i]?" hidden":""}>+ Add time</button></div>
     <div class="rt"><div class="tb" role="toolbar" aria-label="Text formatting">${TOOLBAR}</div><div class="ed" contenteditable="true" data-notes="${i}" role="textbox" aria-multiline="true" aria-label="Notes for ${DOW[dt.getUTCDay()]} ${MON[dt.getUTCMonth()]} ${dt.getUTCDate()}">${noteHtml(d)}</div></div>
   </article>`;
 }
@@ -393,7 +483,7 @@ document.addEventListener("mousedown",ev=>{if(ev.target.closest(".tb button"))ev
 document.addEventListener("paste",ev=>{const ed=ev.target.closest&&ev.target.closest(".ed");if(!ed)return;ev.preventDefault();const txt=(ev.clipboardData||window.clipboardData).getData("text/plain");document.execCommand("insertText",false,txt);});
 document.addEventListener("focusout",ev=>{const t=ev.target;if(t.dataset&&(t.dataset.notes!=null||(t.closest&&t.closest(".pi")))){snap();if(dirty)queueSave(400);}});
 /* focusing a plan row points at its block on the schedule */
-document.addEventListener("focusin",ev=>{const pi=ev.target.closest&&ev.target.closest(".pi");if(!pi||flash===pi.dataset.pi)return;focusBlock(+pi.dataset.pd,pi.dataset.pi,false);});
+document.addEventListener("focusin",ev=>{const pi=ev.target.closest&&ev.target.closest(".pi");if(!pi||!pi.dataset.pi||flash===pi.dataset.pi)return;focusBlock(+pi.dataset.pd,pi.dataset.pi,false);});
 window.addEventListener("resize",()=>growAll());
 function renderDayFacts(i){const el=document.querySelector(`#day-${i} .moves`),d=S.days[i];if(el&&d)el.innerHTML=dayFacts(d,sorted(d));}
 
@@ -434,12 +524,10 @@ document.addEventListener("click",ev=>{
   const t=ev.target.closest("button,[data-jump]");if(!t)return;
   if(t.dataset.cmd){runCmd(t.dataset.cmd,t);return;}
   if(t.dataset.pdel!=null){const pi=t.closest(".pi"),[d,b]=planBlock(pi);if(b){d.blocks=d.blocks.filter(x=>x!==b);if(sel.id===b.id){sel.id=null;renderEditor();}changed(true);rerenderPlan();}return;}
-  if(t.dataset.padd!=null){const i=+t.dataset.padd,d=S.days[i];
-    const vis=sorted(d).filter(b=>shown(b)&&!/^hotel$/i.test(b.label||""));const lb=vis[vis.length-1];
-    let s=lb?lb.e:9;if(s>H1-1)s=H1-1;const e=Math.min(H1,s+1);
-    const p=(lb&&!TRANSIT.has(lb.p))?lb.p:(stays(d).slice(-1)[0]||defPlace(i));
-    const nb={id:"b"+(++S.seq),p,s,e,label:"New plan"};apply(d,nb);changed(true);rerenderPlan(nb.id,"data-plab");
-    const el=document.querySelector(`.pi[data-pi="${nb.id}"] [data-plab]`);if(el)el.select();return;}
+  if(t.dataset.padd!=null){const i=+t.dataset.padd;if(!drafts[i])drafts[i]=newDraft(i);renderDays();focusDay(i,false);
+    const el=document.querySelector(`.pi.draft[data-dd="${i}"] [data-dl]`);if(el)el.focus();return;}
+  if(t.dataset.dconfirm!=null){confirmDraft(+t.closest(".pi").dataset.dd);return;}
+  if(t.dataset.dcancel!=null){delete drafts[+t.closest(".pi").dataset.dd];renderDays();return;}
   if(t.dataset.b){sel.d=+t.dataset.d;sel.id=t.dataset.b;renderBoard();renderEditor();markDay(sel.d,true);return;}
   if(t.dataset.jump!=null){markDay(+t.dataset.jump,true);return;}
   if(t.dataset.goto!=null){focusDay(+t.dataset.goto,true);return;}
@@ -454,9 +542,16 @@ document.addEventListener("click",ev=>{
 document.addEventListener("change",ev=>{
   const t=ev.target;
   const pi=t.closest&&t.closest(".pi");
+  if(pi&&pi.classList.contains("draft")){const i=+pi.dataset.dd,dr=drafts[i];if(!dr)return;
+    if(t.dataset.dp!=null){dr.p=t.value;pi.style.setProperty("--pc",place(dr.p).color);return;}
+    if(t.dataset.ds!=null||t.dataset.de!=null){let s=+pi.querySelector("[data-ds]").value,e=+pi.querySelector("[data-de]").value;const len=dr.e-dr.s;
+      if(t.dataset.ds!=null){e=Math.min(H1,s+len);if(e-s<0.25){s=Math.max(H0,H1-len);e=H1;}}else if(e<=s){s=Math.max(H0,e-len);}
+      if(e<=s)e=Math.min(H1,s+0.25);dr.s=s;dr.e=e;pi.querySelector("[data-ds]").value=s;pi.querySelector("[data-de]").value=e;refreshDraftNote(pi);}
+    return;}
   if(pi&&(t.dataset.ps!=null||t.dataset.pe!=null||t.dataset.pp!=null)){planChange(pi,t);return;}
   if(pi&&(t.dataset.plab!=null||t.dataset.pdesc!=null)){snap();renderDayFacts(+pi.dataset.pd);return;}
   if(t.id==="start"&&t.value){S.start=t.value;changed(true);renderAll();return;}
+  if(t.id==="end"){setEnd(t);return;}
   if(t.dataset.pc){place(t.dataset.pc).color=t.value;changed(true);renderDays();renderBoard();return;}
   if(t.dataset.pn){const v=t.value.trim();if(v){place(t.dataset.pn).name=v;changed(true);renderDays();renderBoard();renderEditor();}return;}
   if(t.dataset.title!=null){const d=S.days[+t.dataset.title],v=t.value.trim();if(!v||v===t.placeholder){delete d.title;t.value=t.placeholder;}else d.title=v;changed(true);return;}
@@ -466,18 +561,24 @@ document.addEventListener("change",ev=>{
 document.addEventListener("input",ev=>{
   const t=ev.target;
   if(t.dataset&&t.dataset.notes!=null){syncNotes(t);}
+  if(t.dataset&&(t.dataset.dl!=null||t.dataset.ddesc!=null)){const dr=drafts[+t.closest(".pi").dataset.dd];if(!dr)return;
+    if(t.dataset.dl!=null)dr.label=t.value;else{dr.desc=t.value;grow(t);}return;}
   if(t.dataset&&(t.dataset.plab!=null||t.dataset.pdesc!=null)){const [d,b]=planBlock(t.closest(".pi"));if(!b)return;
     if(t.dataset.plab!=null){b.label=t.value.trim()||undefined;renderBoard();}
     else{if(t.value.trim())b.desc=t.value;else delete b.desc;grow(t);}
     dirty=true;fileDirty=true;setStatus(fileState());queueSave(2500);return;}
   if(t.id==="e-l"){const b=curBlock();if(b){b.label=t.value.trim()||undefined;dirty=true;fileDirty=true;renderBoard();renderDays();}}
 });
-document.addEventListener("keydown",ev=>{if(ev.key==="Escape"&&sel.id)closeEditor();});
+document.addEventListener("keydown",ev=>{if(ev.key==="Escape"&&sel.id)closeEditor();
+  const dli=ev.target.closest&&ev.target.closest(".pi.draft");if(!dli)return;const i=+dli.dataset.dd;
+  if(ev.key==="Escape"){delete drafts[i];renderDays();const b=document.querySelector(`[data-padd="${i}"]`);if(b)b.focus();}
+  else if(ev.key==="Enter"&&ev.target.dataset.dl!=null){ev.preventDefault();if(!dli.querySelector("[data-dconfirm]").disabled)confirmDraft(i);}
+});
 /* ---------- undo / redo (Ctrl+Z, Ctrl+Shift+Z or Ctrl+Y) ---------- */
 let past=[],future=[],last=null;const focusVal=new WeakMap();
 function resetHistory(){past=[];future=[];last=JSON.stringify(S);}
 function snap(){if(last==null){last=JSON.stringify(S);return;}const cur=JSON.stringify(S);if(cur!==last){past.push(last);if(past.length>150)past.shift();last=cur;future=[];}}
-function restore(json,msg){S=JSON.parse(json);last=json;sel.id=null;flash=null;renderAll();dirty=true;fileDirty=true;setStatus(msg);queueSave(1200);}
+function restore(json,msg){drafts={};S=JSON.parse(json);last=json;sel.id=null;flash=null;renderAll();dirty=true;fileDirty=true;setStatus(msg);queueSave(1200);}
 function undo(){snap();if(!past.length){setStatus("Nothing to undo");return;}future.push(last);restore(past.pop(),"Undone · Ctrl+Shift+Z to redo");}
 function redo(){if(!future.length){setStatus("Nothing to redo");return;}past.push(last);restore(future.pop(),"Redone");}
 const isText=a=>a&&(a.isContentEditable||a.tagName==="TEXTAREA"||(a.tagName==="INPUT"&&a.type==="text"));
@@ -577,7 +678,7 @@ function normalize(j){
   for(const d of T.days)for(const b of d.blocks){if(!b.id||seen.has(b.id))b.id="b"+(++n);seen.add(b.id);}
   T.seq=n;return T;
 }
-function loadTrip(T,name,handle){S=T;fileName=name||null;fileHandle=handle||null;fileDirty=false;sel.id=null;sel.d=-1;flash=null;renderAll();resetHistory();dirty=true;save();setStatus(name?`Opened · ${name}`:"New trip");requestAnimationFrame(()=>{measureHead();window.scrollTo({top:0});});}
+function loadTrip(T,name,handle){drafts={};S=T;fileName=name||null;fileHandle=handle||null;fileDirty=false;sel.id=null;sel.d=-1;flash=null;renderAll();resetHistory();dirty=true;save();setStatus(name?`Opened · ${name}`:"New trip");requestAnimationFrame(()=>{measureHead();window.scrollTo({top:0});});}
 async function openFile(){
   if(canFS()&&"showOpenFilePicker" in window){
     try{const [h]=await window.showOpenFilePicker({types:[{description:"Trip file",accept:{"application/json":[".json"]}}]});const f=await h.getFile();readTrip(f,h);}
@@ -600,10 +701,6 @@ document.addEventListener("click",ev=>{
   else if(t.id==="f-saveas"){saveFile(true);}
   else if(t.id==="f-open"){armed(t,"Open…","Discard changes?",openFile);}
   else if(t.id==="f-new"){armed(t,"New","Discard changes?",()=>loadTrip(window.__BLANK(),null,null));}
-  else if(t.id==="dayplus"){S.days.push({notes:"",blocks:[]});changed(true);renderAll();}
-  else if(t.id==="dayminus"){if(S.days.length<=1)return;const last=S.days[S.days.length-1],busy=last.blocks.length||last.notes||last.html||last.title;
-    if(busy&&!t.dataset.armed){t.dataset.armed="1";setStatus("The last day has plans — click − again to remove it");setTimeout(()=>{delete t.dataset.armed;},3500);return;}
-    delete t.dataset.armed;S.days.pop();if(sel.d>=S.days.length){sel.d=-1;sel.id=null;}changed(true);renderAll();}
 });
 document.addEventListener("change",ev=>{if(ev.target.id==="ttl"){S.title=ev.target.value.trim()||"My trip";changed(true);renderHeader();}});
 document.addEventListener("keydown",ev=>{if(!(ev.ctrlKey||ev.metaKey)||ev.altKey)return;const k=ev.key.toLowerCase();
