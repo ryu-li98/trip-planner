@@ -11,7 +11,7 @@
      5. Plan rows in the day cards (each row is a schedule block)
      6. New-row drafts: nothing touches the schedule until Confirm
      7. Rich-text notes
-     8. Block editor (opens when a schedule block is clicked)
+     8. Places: add and rename
      9. Focus and highlighting between the day cards and the schedule
     10. Schedule: drag on empty space to create a block
     11. Schedule: resize, move and Shift-select blocks
@@ -316,31 +316,29 @@
     renderLegend();
     renderDays();
     renderBoard();
-    renderEditor();
   }
 
   function renderHeader() {
     const n = S.days.length,
-      a = dateOf(0),
       z = dateOf(n - 1);
     if (document.activeElement !== $("ttl")) $("ttl").value = S.title || "";
     $("end").value = iso(z);
     $("start-btn").textContent = fmtD(S.start);
     $("end-btn").textContent = fmtD(iso(z));
     document.title = (S.title || "Trip") + " – Trip Planner";
-    $("span").innerHTML =
-      `${MON[a.getUTCMonth()]} ${a.getUTCDate()} – ${MON[z.getUTCMonth()]} ${z.getUTCDate()}, ${z.getUTCFullYear()}<span class="ndays">${n} day${n === 1 ? "" : "s"}</span>`;
-    if ($("start")) $("start").value = S.start;
+    $("span").textContent = `${n} day${n === 1 ? "" : "s"}`;
+    $("start").value = S.start;
   }
 
   function renderLegend() {
     const used = new Set(S.days.flatMap((d) => d.blocks.map((b) => b.p)));
-    $("legend").innerHTML = S.places
-      .map(
-        (p) =>
-          `<span class="chip"><button type="button" class="sw" data-pcb="${p.id}" style="--c:${p.color}" aria-haspopup="dialog" aria-label="Color for ${esc(p.name)}"></button><span class="nm">${esc(p.name)}</span></span>`,
-      )
-      .join("");
+    $("legend").innerHTML =
+      S.places
+        .map(
+          (p) =>
+            `<span class="chip"><button type="button" class="sw" data-pcb="${p.id}" style="--c:${p.color}" aria-haspopup="dialog" aria-label="Name and color for ${esc(p.name)}"></button><span class="nm">${esc(p.name)}</span></span>`,
+        )
+        .join("") + `<button type="button" class="chip add-place" data-addplace>+ Add place</button>`;
   }
 
   function renderDays() {
@@ -395,7 +393,7 @@
       .join(
         "",
       )}${drafts[i] ? draftItem(i) : ""}</ol><button type="button" class="padd" data-padd="${i}"${drafts[i] ? " hidden" : ""}>+ Add time</button></div>
-    <div class="rt"><div class="tb" role="toolbar" aria-label="Text formatting">${TOOLBAR}</div><div class="ed" contenteditable="true" data-notes="${i}" role="textbox" aria-multiline="true" aria-label="Notes for ${DOW[dt.getUTCDay()]} ${MON[dt.getUTCMonth()]} ${dt.getUTCDate()}">${noteHtml(d)}</div></div>
+    <div class="rt"><div class="tb" role="toolbar" aria-label="Text formatting">${TOOLBAR}</div><div class="ed" contenteditable="true" data-notes="${i}" data-ph="Other notes for this day" role="textbox" aria-multiline="true" aria-label="Notes for ${DOW[dt.getUTCDay()]} ${MON[dt.getUTCMonth()]} ${dt.getUTCDate()}">${noteHtml(d)}</div></div>
   </article>`;
   }
 
@@ -479,7 +477,7 @@
 
   function planItem(i, b) {
     const p = place(b.p);
-    return `<li class="pi" data-pi="${b.id}" data-pd="${i}" style="--pc:${p.color}">
+    return `<li class="pi${sel.id === b.id ? " pi-hl" : ""}" data-pi="${b.id}" data-pd="${i}" style="--pc:${p.color}">
     <div class="pr">
       <select class="pt" data-ps aria-label="Start time">${topts(H0, H1 - 0.25, b.s)}</select><span class="dash">–</span>
       <select class="pt" data-pe aria-label="End time">${topts(H0 + 0.25, H1, b.e)}</select>
@@ -487,9 +485,165 @@
       <select class="pp" data-pp aria-label="Place (sets the color)" title="Change place">${S.places.map((x) => `<option value="${x.id}"${x.id === b.p ? " selected" : ""}>${esc(x.name)}</option>`).join("")}</select>
       <button type="button" class="px" data-pdel aria-label="Remove this time">×</button>
     </div>
-    <textarea class="pdsc" data-pdesc rows="1" placeholder="What you'll do" aria-label="What you'll do ${fmt12(b.s)} to ${fmt12(b.e)}">${esc(b.desc || "")}</textarea>
+    <div class="pdsv" data-pdv role="button" tabindex="0" aria-label="Edit what you'll do"${hasDesc(b) ? "" : " hidden"}>${descHtml(b)}</div>
+    <div class="rt pdrt"${hasDesc(b) ? " hidden" : ""}><div class="tb" role="toolbar" aria-label="Text formatting">${TOOLBAR}</div><div class="ed pded" contenteditable="true" data-pded role="textbox" aria-multiline="true" data-ph="What you'll do" aria-label="What you'll do ${fmt12(b.s)} to ${fmt12(b.e)}">${descHtml(b)}</div></div>
   </li>`;
   }
+
+  /* ---- "What you'll do": rich text, same toolbar as the day notes, plus links ----
+     Saved as b.html (cleaned HTML) and b.desc (its plain text). Older files with plain-text
+     descriptions still open: bare URLs and [text](url) become links.
+     Shown as read-only text with clickable links; clicking the text (not a link) switches to editing. */
+  const hasDesc = (b) => !!(b.desc && b.desc.trim());
+  const URL_RE = /(?:https?:\/\/|www\.)[^\s<>"]+/g;
+  const MD_LINK = /\[([^\]\n]+)\]\(((?:https?:\/\/|www\.)[^\s)]+)\)/g;
+  const hrefOf = (u) => (/^www\./i.test(u) ? "https://" + u : u);
+  const shortUrl = (u) => {
+    const t = u.replace(/^https?:\/\//i, "").replace(/\/$/, "");
+    return t.length > 42 ? t.slice(0, 40) + "…" : t;
+  };
+  const anchor = (u, label) => `<a href="${esc(hrefOf(u))}">${label}</a>`;
+  function linkifyBare(t) {
+    let out = "",
+      last = 0,
+      m;
+    URL_RE.lastIndex = 0;
+    while ((m = URL_RE.exec(t))) {
+      let u = m[0];
+      const trail = u.match(/[.,;:!?)\]'"]+$/); // leave sentence punctuation outside the link
+      if (trail) u = u.slice(0, -trail[0].length);
+      out += esc(t.slice(last, m.index)) + anchor(u, esc(shortUrl(u)));
+      last = m.index + u.length;
+      URL_RE.lastIndex = last;
+    }
+    return out + esc(t.slice(last));
+  }
+  function linkify(text) {
+    let out = "",
+      last = 0,
+      m;
+    MD_LINK.lastIndex = 0;
+    while ((m = MD_LINK.exec(text))) {
+      out += linkifyBare(text.slice(last, m.index)) + anchor(m[2], esc(m[1]));
+      last = MD_LINK.lastIndex;
+    }
+    return out + linkifyBare(text.slice(last));
+  }
+  function descHtml(b) {
+    return clean(b.html != null ? b.html : linkify(b.desc || "").replace(/\n/g, "<br>"));
+  }
+  function syncDesc(ed) {
+    const [, b] = planBlock(ed.closest(".pi"));
+    if (!b) return;
+    const txt = ed.innerText.trim();
+    if (txt) {
+      b.html = clean(ed.innerHTML);
+      b.desc = txt;
+    } else {
+      delete b.html;
+      delete b.desc;
+    }
+    dirty = true;
+    fileDirty = true;
+    setStatus(fileState());
+    queueSave(2500);
+  }
+  function editDesc(view) {
+    const rt = view.nextElementSibling,
+      ed = rt.querySelector(".ed");
+    view.hidden = true;
+    rt.hidden = false;
+    ed.focus();
+    const r = document.createRange();
+    r.selectNodeContents(ed);
+    r.collapse(false);
+    const sel = getSelection();
+    sel.removeAllRanges();
+    sel.addRange(r);
+  }
+  function showDesc(ed) {
+    const rt = ed.closest(".pdrt"),
+      view = rt && rt.previousElementSibling;
+    if (!view || !ed.isConnected || !ed.innerText.trim()) return;
+    const [, b] = planBlock(ed.closest(".pi"));
+    view.innerHTML = b ? descHtml(b) : clean(ed.innerHTML);
+    view.hidden = false;
+    rt.hidden = true;
+  }
+  /* put text into a plain description box (a new row's draft) at the selection, as if typed */
+  function insertInto(ta, s, e, text) {
+    ta.focus();
+    ta.setSelectionRange(s, e);
+    if (!document.execCommand("insertText", false, text)) ta.setRangeText(text, s, e, "end");
+    ta.dispatchEvent(new Event("input", { bubbles: true }));
+  }
+  const isDraftBox = (t) => t && t.tagName === "TEXTAREA" && t.dataset.ddesc != null;
+  const isUrl = (t) => /^(https?:\/\/|www\.)\S+$/i.test(t);
+
+  document.addEventListener("click", (ev) => {
+    const view = ev.target.closest && ev.target.closest("[data-pdv]");
+    if (view && !ev.target.closest("a")) editDesc(view);
+  });
+  document.addEventListener("keydown", (ev) => {
+    const t = ev.target;
+    if (t.matches && t.matches("[data-pdv]") && (ev.key === "Enter" || ev.key === " ")) {
+      ev.preventDefault();
+      editDesc(t);
+      return;
+    }
+    if (!(ev.ctrlKey || ev.metaKey) || ev.altKey || ev.key.toLowerCase() !== "k") return;
+    const ed = t.closest && t.closest(".ed");
+    if (ed) {
+      ev.preventDefault();
+      openEdLink(ed);
+    } else if (isDraftBox(t)) {
+      ev.preventDefault();
+      openPop(t, "link", {
+        ta: t,
+        s: t.selectionStart,
+        e: t.selectionEnd,
+        sel: t.value.slice(t.selectionStart, t.selectionEnd),
+      });
+    }
+  });
+  /* Rich-text boxes show their toolbar while you're in them. Leaving one hides the toolbar (and turns a
+     description back into its read view) only after the mouse button comes up: changing the layout
+     mid-click would move whatever you were clicking out from under the pointer. */
+  let pointerDown = false;
+  document.addEventListener("pointerdown", () => (pointerDown = true), true);
+  document.addEventListener("pointerup", () => (pointerDown = false), true);
+  document.addEventListener("pointercancel", () => (pointerDown = false), true);
+  const afterClick = (fn) => {
+    if (!pointerDown) return setTimeout(fn, 0);
+    document.addEventListener("pointerup", () => setTimeout(fn, 0), { once: true, capture: true });
+  };
+  document.addEventListener("focusin", (ev) => {
+    const rt = ev.target.closest && ev.target.closest(".rt");
+    if (rt) rt.classList.add("editing");
+  });
+  document.addEventListener("focusout", (ev) => {
+    const rt = ev.target.closest && ev.target.closest(".rt");
+    if (!rt) return;
+    afterClick(() => {
+      if (rt.contains(document.activeElement)) return;
+      const ed = rt.querySelector(".ed");
+      if (pop && pop.kind === "link" && pop.state.ed === ed) return;
+      rt.classList.remove("editing");
+      if (ed && ed.matches(".pded")) showDesc(ed);
+    });
+  });
+  /* draft rows: select some text, paste a URL over it, and it becomes a named link */
+  document.addEventListener("paste", (ev) => {
+    const ta = ev.target;
+    if (!isDraftBox(ta) || ta.selectionStart === ta.selectionEnd) return;
+    const txt = ((ev.clipboardData || window.clipboardData).getData("text/plain") || "").trim();
+    if (!isUrl(txt)) return;
+    ev.preventDefault();
+    const s = ta.selectionStart,
+      e = ta.selectionEnd,
+      label = ta.value.slice(s, e).replace(/[\[\]]/g, "");
+    insertInto(ta, s, e, `[${label}](${txt})`);
+  });
 
   function grow(t) {
     t.style.height = "auto";
@@ -654,6 +808,8 @@
     ["outdent", "&#8676;", "Decrease indent"],
     ["indent", "&#8677;", "Increase indent"],
     0,
+    ["link", "Link", "Add link (Ctrl+K)"],
+    0,
     ["removeFormat", "Clear", "Clear formatting"],
   ]
     .map((b) =>
@@ -681,6 +837,7 @@
     "DIV",
     "SPAN",
     "BLOCKQUOTE",
+    "A",
   ]);
 
   const OKSTYLE = [
@@ -713,8 +870,20 @@
         const v = c.style.getPropertyValue(p);
         if (v && /^[#\w\s(),.%-]+$/.test(v)) st.push(p + ":" + v);
       }
+      const href = c.tagName === "A" ? (c.getAttribute("href") || "").trim() : "";
+      if (c.tagName === "A" && !/^https?:\/\//i.test(href)) {
+        cleanNode(c);
+        c.replaceWith(...c.childNodes); // drop links that aren't web addresses
+        continue;
+      }
       for (const a of [...c.attributes]) c.removeAttribute(a.name);
       if (st.length) c.setAttribute("style", st.join(";"));
+      if (href) {
+        c.setAttribute("href", href);
+        c.setAttribute("target", "_blank");
+        c.setAttribute("rel", "noopener noreferrer");
+        c.setAttribute("title", href);
+      }
       cleanNode(c);
     }
   }
@@ -742,8 +911,18 @@
     queueSave(2500);
   }
 
+  /* both kinds of rich-text box: the day's notes and a row's "What you'll do" */
+  function syncEd(ed) {
+    if (ed.dataset.notes != null) syncNotes(ed);
+    else if (ed.dataset.pded != null) syncDesc(ed);
+  }
+
   function runCmd(cmd, btn) {
     const ed = btn.closest(".rt").querySelector(".ed");
+    if (cmd === "link") {
+      openEdLink(ed);
+      return;
+    }
     const s = getSelection();
     if (!s.rangeCount || !ed.contains(s.anchorNode)) ed.focus();
     try {
@@ -758,7 +937,14 @@
       const on = /207,\s*58,\s*45/.test(v);
       document.execCommand("foreColor", false, on ? getComputedStyle(ed).color : "#cf3a2d");
     } else document.execCommand(cmd, false, null);
-    syncNotes(ed);
+    syncEd(ed);
+  }
+
+  /* Ctrl+K or the Link button: remember the selection, ask for the address in a popover */
+  function openEdLink(ed) {
+    const s = getSelection(),
+      range = s.rangeCount && ed.contains(s.anchorNode) ? s.getRangeAt(0).cloneRange() : null;
+    openPop(ed, "link", { ed, range, sel: range ? range.toString() : "" });
   }
 
   document.addEventListener("mousedown", (ev) => {
@@ -769,77 +955,35 @@
     const ed = ev.target.closest && ev.target.closest(".ed");
     if (!ed) return;
     ev.preventDefault();
-    const txt = (ev.clipboardData || window.clipboardData).getData("text/plain");
-    document.execCommand("insertText", false, txt);
+    const txt = (ev.clipboardData || window.clipboardData).getData("text/plain"),
+      url = txt.trim(),
+      s = getSelection();
+    if (/^(https?:\/\/|www\.)\S+$/i.test(url)) {
+      const href = /^www\./i.test(url) ? "https://" + url : url;
+      if (s.rangeCount && !s.isCollapsed) document.execCommand("createLink", false, href);
+      else
+        document.execCommand("insertHTML", false, `<a href="${esc(href)}">${esc(shortUrl(href))}</a>&nbsp;`);
+    } else document.execCommand("insertText", false, txt);
+    syncEd(ed);
   });
 
-  /* ===== 8. Block editor (opens when a schedule block is clicked) ===== */
+  /* ===== 8. Places: add and rename ===== */
 
-  function times(from, to) {
-    let o = "";
-    for (let t = from; t <= to + 1e-9; t += 0.25) o += `<option value="${t}">${fmtT(t)}</option>`;
-    return o;
+  /* a new place gets the first palette color nobody uses yet */
+  function addPlace() {
+    const used = new Set(S.places.map((p) => p.color.toLowerCase())),
+      color = PALETTE.find((c) => !used.has(c)) || PALETTE[0],
+      id = "p" + ++S.seq;
+    S.places.push({ id, name: "New place", color });
+    return id;
   }
 
-  function renderEditor() {
-    const ed = $("editor");
-    if (sel.id == null) {
-      ed.hidden = true;
-      return;
-    }
-    const d = S.days[sel.d],
-      b = d && d.blocks.find((x) => x.id === sel.id);
-    if (!b) {
-      sel.id = null;
-      ed.hidden = true;
-      return;
-    }
-    const dt = dateOf(sel.d);
-    ed.innerHTML = `<h4>${DOW[dt.getUTCDay()]} ${MON[dt.getUTCMonth()]} ${dt.getUTCDate()}</h4>
-   <label class="f" for="e-p">Where<select id="e-p">${S.places.map((p) => `<option value="${p.id}"${p.id === b.p ? " selected" : ""}>${esc(p.name)}</option>`).join("")}<option value="__new">New place…</option></select></label>
-   <div class="newp" id="e-new" hidden><label class="f" for="e-nn" style="flex:1">Place name<input type="text" id="e-nn" placeholder="e.g. Pai"></label><button type="button" class="sw big" id="e-ncb" style="--c:#4a7fb0" aria-haspopup="dialog" aria-label="Color for the new place"></button><input type="hidden" id="e-nc" value="#4a7fb0"><button id="e-na">Add</button></div>
-   <label class="f" for="e-pn">Place name (renames it everywhere)<input type="text" id="e-pn" value="${esc(place(b.p).name)}"></label>
-   <label class="f" for="e-l">Label (optional)<input type="text" id="e-l" value="${esc(b.label || "")}" placeholder="${esc(place(b.p).name)}"></label>
-   <div class="row"><label class="f" for="e-s">From<select id="e-s">${times(H0, H1 - 0.5)}</select></label><label class="f" for="e-e">To<select id="e-e">${times(H0 + 0.5, H1)}</select></label></div>
-   <div class="acts"><button class="danger" id="e-del">Delete block</button><button class="primary" id="e-ok">Done</button></div>`;
-    $("e-s").value = b.s;
-    $("e-e").value = b.e;
-    ed.hidden = false;
-  }
-
-  function curBlock() {
-    const d = S.days[sel.d];
-    return d && d.blocks.find((x) => x.id === sel.id);
-  }
-
-  function editChanged() {
-    const b = curBlock();
-    if (!b) return;
-    const d = S.days[sel.d];
-    const pv = $("e-p").value;
-    if (pv === "__new") {
-      $("e-new").hidden = false;
-      $("e-nn").focus();
-      return;
-    }
-    let s = +$("e-s").value,
-      e = +$("e-e").value;
-    if (e <= s) e = Math.min(H1, s + 0.5);
-    const nb = { ...b, p: pv, s, e, label: $("e-l").value.trim() || undefined };
-    apply(d, nb);
-    changed(false);
-    renderLegend();
-    renderDays();
-    renderBoard();
-    $("e-s").value = s;
-    $("e-e").value = e;
-  }
-
-  function closeEditor() {
+  /* clicking a block selects it (outline on the schedule, its row highlighted); Esc clears it */
+  function deselectBlock() {
+    if (sel.id == null) return;
     sel.id = null;
-    $("editor").hidden = true;
+    markRow(null);
     renderBoard();
-    if (dirty) queueSave(400);
   }
 
   /* ===== 9. Focus and highlighting between the day cards and the schedule ===== */
@@ -852,6 +996,20 @@
       el.classList.add("hl");
       if (scroll) el.scrollIntoView({ behavior: "smooth", block: "center" });
     }
+  }
+
+  /* clicking a schedule block: highlight its day and its row in the day card, and bring that row to the
+     middle of the page (plain "Hotel" filler has no row, so its day card is centred instead) */
+  function markRow(id) {
+    document.querySelectorAll(".pi.pi-hl").forEach((e) => e.classList.remove("pi-hl"));
+    const row = id && document.querySelector(`.pi[data-pi="${id}"]`);
+    if (row) row.classList.add("pi-hl");
+    return row;
+  }
+  function revealRow(i, id) {
+    markDay(i, false);
+    const row = markRow(id);
+    (row || $("day-" + i)).scrollIntoView({ behavior: reduceMotion() ? "auto" : "smooth", block: "center" });
   }
 
   /* drag on an empty part of a column to create a block */
@@ -990,8 +1148,9 @@
     changed(false);
     renderDays();
     renderBoard();
-    renderEditor();
-    markDay(j, false);
+    revealRow(j, nb.id);
+    const lab = document.querySelector(`.pi[data-pi="${nb.id}"] [data-plab]`);
+    if (lab) lab.focus({ preventScroll: true });
   });
 
   $("sched").addEventListener("pointercancel", () => {
@@ -1041,7 +1200,6 @@
     changed(true);
     renderDays();
     renderBoard();
-    renderEditor();
   }
 
   function resizeBounds(d, b, edge) {
@@ -1221,7 +1379,6 @@
       changed(true);
       renderDays();
       renderBoard();
-      renderEditor();
     }
     const items = [];
     for (const [id, f] of from) {
@@ -1303,10 +1460,7 @@
       L.d.blocks = L.d.blocks.filter((x) => x.id !== id);
     }
     msel.clear();
-    if (sel.id && ids.includes(sel.id)) {
-      sel.id = null;
-      $("editor").hidden = true;
-    }
+    if (sel.id && ids.includes(sel.id)) sel.id = null;
     changed(true);
     renderDays();
     renderBoard();
@@ -1329,11 +1483,16 @@
 
   function closePop(refocus = true) {
     if (!pop) return;
+    // a place name typed but not yet applied (closed with Esc or a click elsewhere) still counts
+    const nameField = pop.kind === "color" && $("pop").querySelector("[data-pname]");
+    if (nameField) renameCommit(nameField);
     const a = pop.anchor;
     a.removeAttribute("aria-expanded");
     pop = null;
     $("pop").hidden = true;
     if (refocus && a && a.isConnected) a.focus();
+    else if (a && a.matches && a.matches(".pded"))
+      setTimeout(() => document.activeElement !== a && showDesc(a), 0);
   }
 
   function placePop() {
@@ -1357,19 +1516,74 @@
   function renderPop() {
     const p = $("pop");
     if (!pop) return;
-    p.innerHTML = pop.kind === "cal" ? calHTML() : pop.kind === "list" ? listHTML() : colorHTML();
+    p.innerHTML =
+      pop.kind === "cal"
+        ? calHTML()
+        : pop.kind === "list"
+          ? listHTML()
+          : pop.kind === "link"
+            ? linkHTML()
+            : colorHTML();
     if (pop.kind === "list")
       p.style.minWidth = Math.max(120, Math.round(pop.anchor.getBoundingClientRect().width)) + "px";
     else p.style.minWidth = "";
     placePop();
     const f =
-      p.querySelector(pop.kind === "cal" ? ".cd.cur" : pop.kind === "list" ? ".lo.on" : ".cs.on") ||
-      p.querySelector(".cd:not([disabled]),.cs,.lo");
+      p.querySelector(
+        pop.kind === "cal"
+          ? ".cd.cur"
+          : pop.kind === "list"
+            ? ".lo.on"
+            : pop.kind === "link"
+              ? "[data-lku]"
+              : ".cs.on",
+      ) || p.querySelector(".cd:not([disabled]),.cs,.lo");
     if (f) {
       f.focus({ preventScroll: true });
       if (pop.kind === "list")
         p.scrollTop = Math.max(0, f.offsetTop - p.clientHeight / 2 + f.offsetHeight / 2);
     }
+  }
+
+  /* Ctrl+K in a description: add a link at the cursor, or around the selected text */
+  function linkHTML() {
+    const st = pop.state;
+    return `<div class="lk-t">Add link</div>
+      <input type="url" class="lk-in" data-lku placeholder="Paste a link (https://…)" aria-label="Link address">
+      ${st.sel ? `<p class="lk-sel">Links “${esc(st.sel.length > 40 ? st.sel.slice(0, 38) + "…" : st.sel)}”</p>` : `<input type="text" class="lk-in" data-lkx placeholder="Text to show (optional)" aria-label="Text to show">`}
+      <div class="lk-a"><button type="button" data-lkc>Cancel</button><button type="button" class="primary" data-lka>Add link</button></div>`;
+  }
+  function applyLink() {
+    const st = pop.state,
+      p = $("pop");
+    let url = (p.querySelector("[data-lku]").value || "").trim();
+    if (!url) {
+      p.querySelector("[data-lku]").focus();
+      return;
+    }
+    if (!/^https?:\/\//i.test(url)) url = "https://" + url.replace(/^\/+/, "");
+    const x = p.querySelector("[data-lkx]"),
+      label = (st.sel || (x && x.value) || "").replace(/[\[\]]/g, "").trim();
+    closePop(false);
+    if (st.ta) {
+      insertInto(st.ta, st.s, st.e, label ? `[${label}](${url})` : url);
+      return;
+    }
+    const ed = st.ed,
+      s = getSelection();
+    ed.focus();
+    if (st.range) {
+      s.removeAllRanges();
+      s.addRange(st.range);
+    }
+    if (st.sel) document.execCommand("createLink", false, url);
+    else
+      document.execCommand(
+        "insertHTML",
+        false,
+        `<a href="${esc(url)}">${esc(label || shortUrl(url))}</a>&nbsp;`,
+      );
+    syncEd(ed);
   }
 
   /* dropdown lists (times, places): the select keeps the value, this menu replaces the browser's */
@@ -1384,18 +1598,36 @@
   }
 
   function openList(sel) {
-    const placeSel = sel.matches("[data-pp],[data-dp],#e-p");
+    const placeSel = sel.matches("[data-pp],[data-dp]");
     const items = [...sel.options].map((o) => ({
       v: o.value,
       label: o.textContent,
       color: placeSel ? (S.places.find((p) => p.id === o.value) || {}).color : null,
     }));
+    if (placeSel) items.push({ v: "__new", label: "New place…", color: null });
     openPop(sel, "list", { sel, items, cur: sel.value });
   }
 
   function pickList(v) {
     const sel = pop.state.sel;
     closePop(false);
+    if (v === "__new") {
+      // make the place, put this row (or draft) in it, then open its popover so it can be named
+      const id = addPlace(),
+        pi = sel.closest(".pi"),
+        find = pi.classList.contains("draft")
+          ? () => document.querySelector(`.pi.draft[data-dd="${pi.dataset.dd}"] [data-dp]`)
+          : () => document.querySelector(`.pi[data-pi="${pi.dataset.pi}"] [data-pp]`);
+      const o = document.createElement("option");
+      o.value = id;
+      o.textContent = place(id).name;
+      sel.appendChild(o);
+      sel.value = id;
+      sel.dispatchEvent(new Event("change", { bubbles: true }));
+      renderLegend();
+      openPlace(find(), id, true, find);
+      return;
+    }
     if (sel.value === v) {
       sel.focus();
       return;
@@ -1518,46 +1750,60 @@
 
   function colorHTML() {
     const cur = (pop.state.cur || "").toLowerCase();
-    return `<div class="cp-t">${esc(pop.state.title)}</div><div class="cp-g">${PALETTE.map((c) => `<button type="button" class="cs${c === cur ? " on" : ""}" data-cs="${c}" style="--c:${c}" aria-label="${c}"></button>`).join("")}</div>
+    return `<input type="text" class="cp-name" data-pname value="${esc(place(pop.state.placeId).name)}" aria-label="Place name (renames it everywhere)" placeholder="Place name"><div class="cp-g">${PALETTE.map((c) => `<button type="button" class="cs${c === cur ? " on" : ""}" data-cs="${c}" style="--c:${c}" aria-label="${c}"></button>`).join("")}</div>
     <div class="cp-f"><span class="cp-now" style="--c:${cur || "#888"}"></span><span class="cp-hex">${cur.toUpperCase()}</span><label class="cp-more">More colors<input type="color" data-cmore value="${cur || "#888888"}"></label></div>`;
   }
 
-  function openColor(btn) {
-    let cur, title, apply;
-    if (btn.dataset.pcb) {
-      const p = place(btn.dataset.pcb);
-      cur = p.color;
-      title = p.name;
-      apply = (c) => {
-        p.color = c;
-        changed(true);
-        renderLegend();
-        renderDays();
-        renderBoard();
-        renderEditor();
-      };
-    } else {
-      cur = $("e-nc").value;
-      title = "New place";
-      apply = (c) => {
-        $("e-nc").value = c;
-        const b = $("e-ncb");
-        if (b) b.style.setProperty("--c", c);
-      };
+  /* a place's popover: rename it (everywhere) and pick its color. Opened from its legend dot, or from a
+     row right after "New place…". reanchor() finds the control again after the page re-renders. */
+  function openPlace(anchor, placeId, focusName, reanchor) {
+    if (!anchor) return;
+    reanchor = reanchor || (() => document.querySelector(`[data-pcb="${placeId}"]`));
+    openPop(anchor, "color", { placeId, cur: place(placeId).color, reanchor, focusName });
+    if (focusName) {
+      const n = $("pop").querySelector("[data-pname]");
+      n.focus();
+      n.select();
     }
-    openPop(btn, "color", { cur, title, apply });
+  }
+  function openColor(btn) {
+    openPlace(btn, btn.dataset.pcb, false);
+  }
+  function placeChanged() {
+    changed(true);
+    renderLegend();
+    renderDays();
+    renderBoard();
+    const a = pop && pop.state.reanchor();
+    if (a) pop.anchor = a;
   }
 
   function pickColor(c, keepOpen) {
     const st = pop.state;
     st.cur = c;
-    const key = pop.anchor.dataset.pcb || pop.anchor.id;
-    st.apply(c);
-    // the legend re-renders, so re-anchor to the fresh swatch
-    const a = pop.anchor.dataset.pcb ? document.querySelector(`[data-pcb="${key}"]`) : $("e-ncb");
-    if (a) pop.anchor = a;
+    place(st.placeId).color = c;
+    placeChanged();
     if (keepOpen) renderPop();
     else closePop();
+  }
+
+  /* typing a name updates the legend as you type; leaving the field (or Enter) applies it everywhere */
+  function renameLive(input) {
+    const p = place(pop.state.placeId),
+      chip = document.querySelector(`[data-pcb="${p.id}"]`);
+    if (chip) chip.nextElementSibling.textContent = input.value || p.name;
+  }
+  function renameCommit(input) {
+    if (!pop || pop.kind !== "color") return;
+    const p = place(pop.state.placeId),
+      v = input.value.trim();
+    if (!v || v === p.name) {
+      input.value = p.name;
+      renameLive(input);
+      return;
+    }
+    p.name = v;
+    placeChanged();
   }
 
   $("pop").addEventListener("click", (ev) => {
@@ -1583,15 +1829,26 @@
       pickList(t.dataset.lv);
       return;
     }
+    if (t.dataset.lka != null) {
+      applyLink();
+      return;
+    }
+    if (t.dataset.lkc != null) {
+      closePop();
+      return;
+    }
     if (t.dataset.cs) {
       pickColor(t.dataset.cs, false);
     }
   });
 
   $("pop").addEventListener("input", (ev) => {
-    if (ev.target.dataset.cmore != null && pop) {
-      pickColor(ev.target.value.toLowerCase(), true);
-    }
+    if (!pop) return;
+    if (ev.target.dataset.cmore != null) pickColor(ev.target.value.toLowerCase(), true);
+    else if (ev.target.dataset.pname != null) renameLive(ev.target);
+  });
+  $("pop").addEventListener("change", (ev) => {
+    if (ev.target.dataset.pname != null) renameCommit(ev.target);
   });
 
   $("pop").addEventListener("keydown", (ev) => {
@@ -1600,6 +1857,22 @@
       ev.preventDefault();
       ev.stopPropagation();
       closePop();
+      return;
+    }
+    if (ev.target.dataset && ev.target.dataset.pname != null) {
+      if (ev.key === "Enter") {
+        ev.preventDefault();
+        renameCommit(ev.target);
+        const g = $("pop").querySelector(".cs.on") || $("pop").querySelector(".cs");
+        if (g) g.focus();
+      }
+      return;
+    }
+    if (pop.kind === "link") {
+      if (ev.key === "Enter" && ev.target.tagName === "INPUT") {
+        ev.preventDefault();
+        applyLink();
+      }
       return;
     }
     if (pop.kind === "cal") {
@@ -1667,7 +1940,7 @@
   window.addEventListener("scroll", () => placePop(), { passive: true });
 
   document.addEventListener("click", (ev) => {
-    const b = ev.target.closest && ev.target.closest("[data-cal],[data-pcb],#e-ncb");
+    const b = ev.target.closest && ev.target.closest("[data-cal],[data-pcb]");
     if (!b) return;
     ev.preventDefault();
     if (pop && pop.anchor === b) {
@@ -1922,6 +2195,7 @@
             e: Math.min(H1, +b.e),
             label: b.label ? String(b.label) : undefined,
             desc: b.desc ? String(b.desc) : undefined,
+            html: typeof b.html === "string" ? b.html : undefined,
           })),
       })),
       seq: 0,
@@ -2163,10 +2437,7 @@
         [d, b] = planBlock(pi);
       if (b) {
         d.blocks = d.blocks.filter((x) => x !== b);
-        if (sel.id === b.id) {
-          sel.id = null;
-          renderEditor();
-        }
+        if (sel.id === b.id) sel.id = null;
         changed(true);
         rerenderPlan();
       }
@@ -2196,7 +2467,7 @@
       else msel.add(id);
       if (sel.id) {
         sel.id = null;
-        $("editor").hidden = true;
+        markRow(null);
       }
       renderBoard();
       selStatus();
@@ -2210,37 +2481,19 @@
       sel.d = +t.dataset.d;
       sel.id = t.dataset.b;
       renderBoard();
-      renderEditor();
-      markDay(sel.d, true);
+      revealRow(sel.d, sel.id);
       return;
     }
     if (t.dataset.jump != null) {
       markDay(+t.dataset.jump, true);
       return;
     }
-    if (t.id === "e-ok") {
-      closeEditor();
-      return;
-    }
-    if (t.id === "e-del") {
-      const d = S.days[sel.d];
-      d.blocks = d.blocks.filter((x) => x.id !== sel.id);
-      changed(false);
-      closeEditor();
+    if (t.dataset.addplace != null) {
+      const id = addPlace();
+      changed(true);
+      renderLegend();
       renderDays();
-      return;
-    }
-    if (t.id === "e-na") {
-      const nm = $("e-nn").value.trim();
-      if (!nm) return;
-      const id = "p" + ++S.seq;
-      S.places.push({ id, name: nm, color: $("e-nc").value });
-      const b = curBlock();
-      if (b) {
-        b.p = id;
-      }
-      changed(false);
-      renderAll();
+      openPlace(document.querySelector(`[data-pcb="${id}"]`), id, true);
       return;
     }
   });
@@ -2283,7 +2536,7 @@
       planChange(pi, t);
       return;
     }
-    if (pi && (t.dataset.plab != null || t.dataset.pdesc != null)) {
+    if (pi && t.dataset.plab != null) {
       snap();
       renderDayFacts(+pi.dataset.pd);
       return;
@@ -2318,19 +2571,6 @@
       changed(true);
       return;
     }
-    if (t.id === "e-pn") {
-      const b = curBlock(),
-        v = t.value.trim();
-      if (b && v) {
-        place(b.p).name = v;
-        changed(false);
-        renderLegend();
-        renderDays();
-        renderBoard();
-      }
-      return;
-    }
-    if (t.closest("#editor") && t.id !== "e-nn" && t.id !== "e-nc") editChanged();
   });
 
   document.addEventListener("input", (ev) => {
@@ -2348,37 +2588,25 @@
       }
       return;
     }
-    if (t.dataset && (t.dataset.plab != null || t.dataset.pdesc != null)) {
+    if (t.dataset && t.dataset.pded != null) {
+      syncDesc(t);
+      return;
+    }
+    if (t.dataset && t.dataset.plab != null) {
       const [d, b] = planBlock(t.closest(".pi"));
       if (!b) return;
-      if (t.dataset.plab != null) {
-        b.label = t.value.trim() || undefined;
-        renderBoard();
-      } else {
-        if (t.value.trim()) b.desc = t.value;
-        else delete b.desc;
-        grow(t);
-      }
+      b.label = t.value.trim() || undefined;
+      renderBoard();
       dirty = true;
       fileDirty = true;
       setStatus(fileState());
       queueSave(2500);
       return;
     }
-    if (t.id === "e-l") {
-      const b = curBlock();
-      if (b) {
-        b.label = t.value.trim() || undefined;
-        dirty = true;
-        fileDirty = true;
-        renderBoard();
-        renderDays();
-      }
-    }
   });
 
   document.addEventListener("keydown", (ev) => {
-    if (ev.key === "Escape" && sel.id) closeEditor();
+    if (ev.key === "Escape" && sel.id && !msel.size) deselectBlock();
     const dli = ev.target.closest && ev.target.closest(".pi.draft");
     if (!dli) return;
     const i = +dli.dataset.dd;
@@ -2403,14 +2631,43 @@
 
   window.addEventListener("resize", () => growAll());
 
+  /* Header: full size at the top of the page, one slim bar once you scroll. While slim, the space it
+     gave up is kept as margin underneath (out of sight above the page), so nothing below it jumps. */
+  let condensed = false;
+  function setCondensed(on) {
+    const h = $("sh");
+    if (!h || on === condensed) return;
+    // the browser's scroll anchoring would otherwise "correct" the scroll position mid-swap
+    const root = document.documentElement;
+    root.style.overflowAnchor = "none";
+    const before = h.offsetHeight;
+    h.classList.toggle("condensed", on);
+    condensed = on;
+    h.style.marginBottom = on ? `${before - h.offsetHeight - 14}px` : "";
+    measureHead();
+    requestAnimationFrame(() => (root.style.overflowAnchor = ""));
+  }
   window.addEventListener(
     "scroll",
     () => {
-      const h = $("sh");
-      if (h) h.classList.toggle("scrolled", scrollY > 2);
+      const h = $("sh"),
+        y = scrollY;
+      if (h) h.classList.toggle("scrolled", y > 2);
+      // the legend fades out as it slides up under the header
+      $("legend").style.opacity = Math.max(0, 1 - y / 70).toFixed(2);
+      fitBoardToLegend();
+      if (!condensed && y > 60) setCondensed(true);
+      else if (condensed && y < 8) setCondensed(false);
     },
     { passive: true },
   );
+  window.addEventListener("resize", () => {
+    // re-measure the slim bar's compensation for the new width
+    if (condensed) {
+      setCondensed(false);
+      setCondensed(scrollY > 8);
+    }
+  });
 
   /* ===== 16. Boot ===== */
 
@@ -2432,7 +2689,19 @@
   function measureHead() {
     const h = $("sh");
     if (h) document.documentElement.style.setProperty("--headh", h.offsetHeight + "px");
+    fitBoardToLegend();
     requestAnimationFrame(fitHours);
+  }
+  /* near the top the legend sits above the schedule, so shorten the schedule by that much to keep its
+     bottom on screen; once the legend has scrolled away this is 0 */
+  function fitBoardToLegend() {
+    const h = $("sh"),
+      bd = $("board");
+    if (!h || !bd) return;
+    const v = matchMedia("(min-width:1000px)").matches
+      ? Math.max(0, Math.round(bd.getBoundingClientRect().top - h.getBoundingClientRect().bottom - 2))
+      : 0;
+    document.documentElement.style.setProperty("--legvis", v + "px");
   }
 
   try {

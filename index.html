@@ -7,44 +7,61 @@
     <title>Trip Planner</title>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&display=swap" />
+    <link
+      rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&display=swap"
+    />
     <link rel="stylesheet" href="styles.css" />
     <script src="app.js" defer></script>
   </head>
   <body>
     <div class="wrap">
-      <!-- Trip header: stays on screen while the page scrolls -->
+      <!-- Trip header: stays on screen; turns into one slim bar once you scroll -->
       <div class="stickyhead" id="sh">
         <header class="top2">
-          <div class="r1">
-            <h1><input id="ttl" class="ttl" type="text" aria-label="Trip name" placeholder="Trip name" /></h1>
-            <div class="fbtns">
-              <button type="button" id="f-new">New</button>
-              <button type="button" id="f-open">Open</button>
-              <button type="button" id="f-save" class="primary">Save</button>
-              <button type="button" id="f-saveas">Save as</button>
-              <input type="file" id="f-input" accept=".json,application/json" hidden />
-            </div>
+          <h1 class="h-title">
+            <input id="ttl" class="ttl" type="text" aria-label="Trip name" placeholder="Trip name" />
+          </h1>
+          <div class="fbtns">
+            <button type="button" id="f-new">New</button>
+            <button type="button" id="f-open">Open</button>
+            <button type="button" id="f-save" class="primary">Save</button>
+            <button type="button" id="f-saveas">Save as</button>
+            <input type="file" id="f-input" accept=".json,application/json" hidden />
           </div>
-          <div class="r2">
-            <p id="span"></p>
-            <div class="ctl1">
-              <div class="il">
-                <span id="start-l">Starts</span>
-                <button type="button" class="datebtn" id="start-btn" data-cal="start" aria-haspopup="dialog" aria-labelledby="start-l start-btn"></button>
-                <input type="hidden" id="start" />
-              </div>
-              <div class="il">
-                <span id="end-l">Ends</span>
-                <button type="button" class="datebtn" id="end-btn" data-cal="end" aria-haspopup="dialog" aria-labelledby="end-l end-btn"></button>
-                <input type="hidden" id="end" />
-              </div>
+          <div class="ctl1">
+            <div class="il">
+              <span id="start-l">Starts</span>
+              <button
+                type="button"
+                class="datebtn"
+                id="start-btn"
+                data-cal="start"
+                aria-haspopup="dialog"
+                aria-labelledby="start-l start-btn"
+              ></button>
+              <input type="hidden" id="start" />
             </div>
-            <div class="status" id="status" role="status"></div>
+            <div class="il">
+              <span id="end-l">Ends</span>
+              <button
+                type="button"
+                class="datebtn"
+                id="end-btn"
+                data-cal="end"
+                aria-haspopup="dialog"
+                aria-labelledby="end-l end-btn"
+              ></button>
+              <input type="hidden" id="end" />
+            </div>
+            <span class="ndays" id="span"></span>
           </div>
+          <div class="status" id="status" role="status"></div>
         </header>
-        <div class="legend" id="legend" aria-label="Places and colors"></div>
       </div>
+      <!-- Legend: each place's color (click a dot to change it). It sits right under the header and
+           scrolls away beneath it as you move down the page. -->
+      <div class="legend" id="legend" aria-label="Places and colors"></div>
 
       <div class="split">
         <!-- Day by day: one card per day, grouped by where you sleep -->
@@ -57,13 +74,18 @@
       </div>
     </div>
 
-    <!-- Floating panels: block editor and popovers (dropdowns, date and color pickers) -->
-    <div class="editor" id="editor" hidden></div>
+    <!-- Floating panel for popovers (dropdowns, date picker, place name and color) -->
     <div class="pop" id="pop" role="dialog" hidden></div>
 
     <!-- Asks before New or Open would throw away unsaved changes -->
     <div class="scrim" id="ask" hidden>
-      <div class="dialog" role="alertdialog" aria-modal="true" aria-labelledby="ask-t" aria-describedby="ask-d">
+      <div
+        class="dialog"
+        role="alertdialog"
+        aria-modal="true"
+        aria-labelledby="ask-t"
+        aria-describedby="ask-d"
+      >
         <h2 id="ask-t">Discard changes?</h2>
         <p id="ask-d"></p>
         <div class="dlg-acts">
