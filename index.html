@@ -60,5 +60,17 @@
     <!-- Floating panels: block editor and popovers (dropdowns, date and color pickers) -->
     <div class="editor" id="editor" hidden></div>
     <div class="pop" id="pop" role="dialog" hidden></div>
+
+    <!-- Asks before New or Open would throw away unsaved changes -->
+    <div class="scrim" id="ask" hidden>
+      <div class="dialog" role="alertdialog" aria-modal="true" aria-labelledby="ask-t" aria-describedby="ask-d">
+        <h2 id="ask-t">Discard changes?</h2>
+        <p id="ask-d"></p>
+        <div class="dlg-acts">
+          <button type="button" class="dlg-discard" data-ask="discard">Discard</button>
+          <button type="button" class="dlg-save" data-ask="save">Save</button>
+        </div>
+      </div>
+    </div>
   </body>
 </html>

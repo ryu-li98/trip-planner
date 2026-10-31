@@ -1057,7 +1057,9 @@
   function selStatus() {
     if (msel.size)
       setStatus(
-        `${msel.size} block${msel.size > 1 ? "s" : ""} selected. Drag or press ↑/↓ to move, Esc to clear.`,
+        `${msel.size} block${msel.size > 1 ? "s" : ""} selected. Drag or press ↑/↓ to move, Delete to remove, Esc to clear.`,
+        false,
+        0,
       );
     else setStatus(fileState());
   }
@@ -1281,6 +1283,34 @@
       commitMove(msel, dl);
       selStatus();
     }
+  });
+
+  /* Delete (or Backspace) removes the selected blocks, or the block open in the editor */
+  document.addEventListener("keydown", (ev) => {
+    if (ev.key !== "Delete" && ev.key !== "Backspace") return;
+    if (ev.ctrlKey || ev.metaKey || ev.altKey) return;
+    const a = document.activeElement;
+    if (a && (isText(a) || a.tagName === "SELECT")) return;
+    if (pop || !$("ask").hidden) return;
+    const ids = msel.size ? [...msel] : sel.id ? [sel.id] : [];
+    if (!ids.length) return;
+    ev.preventDefault();
+    const names = [];
+    for (const id of ids) {
+      const L = locate(id);
+      if (!L) continue;
+      names.push("“" + (L.b.label || place(L.b.p).name) + "”");
+      L.d.blocks = L.d.blocks.filter((x) => x.id !== id);
+    }
+    msel.clear();
+    if (sel.id && ids.includes(sel.id)) {
+      sel.id = null;
+      $("editor").hidden = true;
+    }
+    changed(true);
+    renderDays();
+    renderBoard();
+    setStatus(`Deleted ${names.join(", ")}. Ctrl+Z to undo.`);
   });
 
   /* ===== 12. Popovers: dropdown lists, date picker and color picker ===== */
@@ -1740,10 +1770,23 @@
     fileDirty = false,
     dl = null;
 
-  function setStatus(t, bad) {
+  /* Status line. A message (anything other than the file state) stays up for a few seconds before the
+     file state comes back, so autosave doesn't wipe it straight away. Pass hold 0 to keep it until replaced. */
+  let msgHold = 0,
+    msgTimer = null;
+  function setStatus(t, bad, hold) {
     const s = $("status");
     s.textContent = t;
     s.classList.toggle("bad", !!bad);
+    clearTimeout(msgTimer);
+    if (hold === undefined) hold = t === fileState() ? 0 : bad ? 6000 : 4000;
+    msgHold = hold ? Date.now() + hold : 0;
+    if (hold)
+      msgTimer = setTimeout(() => {
+        msgHold = 0;
+        if (msel.size) selStatus();
+        else setStatus(fileState());
+      }, hold);
   }
 
   function fileState() {
@@ -1775,7 +1818,7 @@
       localStorage.setItem(DRAFT, JSON.stringify({ S, fileName, fileDirty }));
     } catch (e) {}
     dirty = false;
-    setStatus(fileState());
+    if (Date.now() >= msgHold && !msel.size) setStatus(fileState());
   }
 
   window.addEventListener("beforeunload", () => {
@@ -1837,12 +1880,14 @@
       dirty = true;
       save();
       setStatus(`Saved to ${fileName}`);
+      return true;
     } catch (e) {
       if (e && (e.name === "AbortError" || e.code === "declined")) {
         setStatus(fileState());
-        return;
+        return false;
       }
       setStatus("Couldn't save the file: " + ((e && e.message) || "unknown error"), true);
+      return false;
     }
   }
 
@@ -1961,23 +2006,105 @@
     if (f) readTrip(f, null);
   });
 
-  /* buttons that need a second click when they'd throw away unsaved work */
-  function armed(btn, label, msg, go) {
-    if (!fileDirty || btn.dataset.armed) {
-      delete btn.dataset.armed;
-      btn.textContent = label;
-      go();
+  /* New and Open: with unsaved changes, ask first (Save or Discard), then carry on */
+  let asking = null; // { next: "new" | "open", opener }
+  const startNew = () => loadTrip(blankTrip(), null, null);
+
+  function guarded(next, opener) {
+    if (!fileDirty) {
+      next === "new" ? startNew() : openFile();
       return;
     }
-    btn.dataset.armed = "1";
-    btn.textContent = msg;
-    setTimeout(() => {
-      if (btn.dataset.armed) {
-        delete btn.dataset.armed;
-        btn.textContent = label;
-      }
-    }, 3500);
+    asking = { next, opener };
+    showAsk(
+      "Discard changes?",
+      `You have unsaved changes${fileName ? ` in ${fileName}` : ""}. Save them first, or discard them and ` +
+        (next === "new" ? "start a new trip." : "open another trip."),
+      [
+        ["discard", "Discard", "dlg-discard"],
+        ["save", "Save", "dlg-save"],
+      ],
+    );
   }
+
+  function showAsk(title, text, buttons) {
+    $("ask-t").textContent = title;
+    $("ask-d").textContent = text;
+    $("ask").querySelector(".dlg-acts").innerHTML = buttons
+      .map(([k, label, cls]) => `<button type="button" class="${cls}" data-ask="${k}">${label}</button>`)
+      .join("");
+    $("ask").hidden = false;
+    const last = $("ask").querySelectorAll("[data-ask]");
+    last[last.length - 1].focus();
+  }
+
+  function hideAsk(refocus) {
+    $("ask").hidden = true;
+    if (refocus && asking && asking.opener) asking.opener.focus();
+    asking = null;
+  }
+
+  async function answerAsk(choice) {
+    const a = asking;
+    if (!a) return;
+    if (choice === "pick") {
+      // second step after saving: a fresh click is needed before the browser will show a file picker
+      hideAsk(false);
+      openFile();
+      return;
+    }
+    if (choice === "discard") {
+      hideAsk(false);
+      a.next === "new" ? startNew() : openFile();
+      return;
+    }
+    // Save first; if the save is cancelled or fails, nothing else happens and the changes stay
+    $("ask").hidden = true;
+    const ok = await saveFile(false);
+    if (!ok) {
+      asking = null;
+      return;
+    }
+    if (a.next === "new") {
+      asking = null;
+      startNew();
+      return;
+    }
+    const active = !navigator.userActivation || navigator.userActivation.isActive;
+    if (active) {
+      asking = null;
+      openFile();
+    } else {
+      asking = a;
+      showAsk("Saved", `Your changes are saved to ${fileName}. Now choose the trip to open.`, [
+        ["cancel", "Cancel", "dlg-plain"],
+        ["pick", "Choose file", "dlg-save"],
+      ]);
+    }
+  }
+
+  $("ask").addEventListener("click", (ev) => {
+    const b = ev.target.closest("[data-ask]");
+    if (b) {
+      b.dataset.ask === "cancel" ? hideAsk(true) : answerAsk(b.dataset.ask);
+      return;
+    }
+    if (ev.target === $("ask")) hideAsk(true); // click outside the dialog cancels
+  });
+
+  $("ask").addEventListener("keydown", (ev) => {
+    if (ev.key === "Escape") {
+      ev.preventDefault();
+      ev.stopPropagation();
+      hideAsk(true);
+    } else if (ev.key === "Tab") {
+      // keep focus inside the dialog
+      const bs = [...$("ask").querySelectorAll("[data-ask]")],
+        i = bs.indexOf(document.activeElement);
+      ev.preventDefault();
+      bs[(i + (ev.shiftKey ? bs.length - 1 : 1)) % bs.length].focus();
+    }
+  });
 
   document.addEventListener("click", (ev) => {
     const t = ev.target.closest("button");
@@ -1987,9 +2114,9 @@
     } else if (t.id === "f-saveas") {
       saveFile(true);
     } else if (t.id === "f-open") {
-      armed(t, "Open", "Discard changes?", openFile);
+      guarded("open", t);
     } else if (t.id === "f-new") {
-      armed(t, "New", "Discard changes?", () => loadTrip(blankTrip(), null, null));
+      guarded("new", t);
     }
   });
 

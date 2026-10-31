@@ -54,7 +54,7 @@ body {
   margin: 0 auto;
   padding-left: max(20px, env(safe-area-inset-left, 0px));
   padding-right: max(20px, env(safe-area-inset-right, 0px));
-  padding-block: 0 96px;
+  padding-block: 0 24px; /* a little breathing room after the last day, no empty band */
   display: flex;
   flex-direction: column;
   gap: 32px;
@@ -164,7 +164,7 @@ textarea:focus-visible {
 #days {
   display: flex;
   flex-direction: column;
-  gap: 26px;
+  gap: 16px; /* same space above every destination heading as above the first one */
 }
 #board {
   display: flex;
@@ -401,9 +401,6 @@ body::before {
   display: flex;
   flex-direction: column;
   gap: 14px;
-}
-.section + .section {
-  margin-top: 28px;
 }
 .section > h2 {
   font-size: clamp(28px, 3vw, 40px);
@@ -1287,7 +1284,7 @@ body::before {
   text-align: center;
 }
 .pop.color {
-  width: 296px;
+  width: auto;
 }
 .pop.list {
   padding: 6px;
@@ -1351,7 +1348,11 @@ body::before {
 }
 .cp-g {
   display: grid;
-  grid-template-columns: repeat(9, 1fr);
+  grid-template-columns: repeat(
+    9,
+    24px
+  ); /* fixed columns so the swatches sit centered with even space on both sides */
+  justify-content: center;
   gap: 8px;
 }
 .cs {
@@ -1420,6 +1421,70 @@ body::before {
   height: 100%;
 }
 
+/* "Discard changes?" dialog: dims the page, asks Save or Discard */
+.scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  background: rgba(0, 0, 0, 0.55);
+}
+.scrim[hidden] {
+  display: none;
+}
+.dialog {
+  width: min(340px, 100%);
+  background: rgba(44, 44, 46, 0.9);
+  -webkit-backdrop-filter: saturate(180%) blur(28px);
+  backdrop-filter: saturate(180%) blur(28px);
+  border-radius: 20px;
+  box-shadow:
+    0 24px 70px rgba(0, 0, 0, 0.7),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.08);
+  padding: 22px 20px 18px;
+  text-align: center;
+}
+.dialog h2 {
+  font-size: 19px;
+  font-weight: 600;
+  letter-spacing: -0.022em;
+}
+.dialog p {
+  margin: 8px 0 18px;
+  font-size: 14px;
+  line-height: 1.45;
+  color: var(--muted);
+}
+.dlg-acts {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+.dlg-acts button {
+  padding: 9px 14px;
+  font-size: 14.5px;
+  font-weight: 600;
+}
+.dlg-discard {
+  background: rgba(255, 255, 255, 0.1);
+  color: var(--red);
+}
+.dlg-discard:hover {
+  background: rgba(255, 255, 255, 0.16);
+}
+.dlg-plain {
+  background: rgba(255, 255, 255, 0.1);
+}
+.dlg-save {
+  background: var(--save);
+  color: var(--save-ink);
+}
+.dlg-save:hover {
+  background: #2a56ff;
+}
+
 /* ===== 10. Motion and accessibility ===== */
 @keyframes materialize {
   from {
@@ -1458,6 +1523,21 @@ body::before {
   .editor:not([hidden]),
   .pi.draft {
     animation: fadein 0.15s ease;
+  }
+}
+@media (prefers-reduced-motion: no-preference) {
+  .scrim:not([hidden]) {
+    animation: fadein 0.18s ease;
+  }
+  .scrim:not([hidden]) .dialog {
+    animation: materialize 0.26s cubic-bezier(0.2, 0.8, 0.2, 1);
+  }
+}
+@media (prefers-reduced-transparency: reduce) {
+  .dialog {
+    background: #2c2c2e;
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
   }
 }
 @keyframes fadein {
