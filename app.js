@@ -342,6 +342,10 @@
   }
 
   function renderDays() {
+    renderDaysInner();
+    applyMode();
+  }
+  function renderDaysInner() {
     const groups = [];
     S.days.forEach((d, i) => {
       const n = nightOf(d),
@@ -393,7 +397,7 @@
       .join(
         "",
       )}${drafts[i] ? draftItem(i) : ""}</ol><button type="button" class="padd" data-padd="${i}"${drafts[i] ? " hidden" : ""}>+ Add time</button></div>
-    <div class="rt"><div class="tb" role="toolbar" aria-label="Text formatting">${TOOLBAR}</div><div class="ed" contenteditable="true" data-notes="${i}" data-ph="Other notes for this day" role="textbox" aria-multiline="true" aria-label="Notes for ${DOW[dt.getUTCDay()]} ${MON[dt.getUTCMonth()]} ${dt.getUTCDate()}">${noteHtml(d)}</div></div>
+    <div class="notes"><div class="pdsv ndv" data-pdv role="button" tabindex="0" aria-label="Edit notes for ${DOW[dt.getUTCDay()]} ${MON[dt.getUTCMonth()]} ${dt.getUTCDate()}"${hasNotes(d) ? "" : " hidden"}>${noteHtml(d)}</div><div class="rt"${hasNotes(d) ? " hidden" : ""}><div class="tb" role="toolbar" aria-label="Text formatting">${TOOLBAR}</div><div class="ed" contenteditable="true" data-notes="${i}" data-ph="Other notes for this day" role="textbox" aria-multiline="true" aria-label="Notes for ${DOW[dt.getUTCDay()]} ${MON[dt.getUTCMonth()]} ${dt.getUTCDate()}">${noteHtml(d)}</div></div></div>
   </article>`;
   }
 
@@ -549,6 +553,7 @@
     queueSave(2500);
   }
   function editDesc(view) {
+    if (viewOnly()) return;
     const rt = view.nextElementSibling,
       ed = rt.querySelector(".ed");
     view.hidden = true;
@@ -562,14 +567,25 @@
     sel.addRange(r);
   }
   function showDesc(ed) {
-    const rt = ed.closest(".pdrt"),
+    const rt = ed.closest(".rt"),
       view = rt && rt.previousElementSibling;
-    if (!view || !ed.isConnected || !ed.innerText.trim()) return;
-    const [, b] = planBlock(ed.closest(".pi"));
-    view.innerHTML = b ? descHtml(b) : clean(ed.innerHTML);
+    if (!view || !view.matches("[data-pdv]") || !ed.isConnected || !ed.innerText.trim()) return;
+    if (ed.dataset.notes != null) view.innerHTML = noteHtml(S.days[+ed.dataset.notes] || {});
+    else {
+      const [, b] = planBlock(ed.closest(".pi"));
+      view.innerHTML = b ? descHtml(b) : clean(ed.innerHTML);
+    }
     view.hidden = false;
     rt.hidden = true;
   }
+  const hasNotes = (d) =>
+    !!(
+      (d.notes && d.notes.trim()) ||
+      (d.html &&
+        clean(d.html)
+          .replace(/<[^>]*>|&nbsp;/g, "")
+          .trim())
+    );
   /* put text into a plain description box (a new row's draft) at the selection, as if typed */
   function insertInto(ta, s, e, text) {
     ta.focus();
@@ -581,9 +597,25 @@
   const isUrl = (t) => /^(https?:\/\/|www\.)\S+$/i.test(t);
 
   document.addEventListener("click", (ev) => {
-    const view = ev.target.closest && ev.target.closest("[data-pdv]");
-    if (view && !ev.target.closest("a")) editDesc(view);
+    const t = ev.target.nodeType === 1 ? ev.target : ev.target.parentElement;
+    const link = t && t.closest("a[href]"),
+      view = t && t.closest("[data-pdv]");
+    // a link in the read view opens in a new tab; in an editor, Cmd/Ctrl+click opens it
+    if (link && (view || ((ev.metaKey || ev.ctrlKey) && t.closest(".ed")))) {
+      ev.preventDefault();
+      window.open(link.href, "_blank", "noopener,noreferrer");
+      return;
+    }
+    if (view) editDesc(view);
   });
+  document.addEventListener(
+    "mousedown",
+    (ev) => {
+      const t = ev.target.nodeType === 1 ? ev.target : ev.target.parentElement;
+      if (t && t.closest("[data-pdv] a[href]")) ev.preventDefault(); // keep focus where it is; the click opens the link
+    },
+    true,
+  );
   document.addEventListener("keydown", (ev) => {
     const t = ev.target;
     if (t.matches && t.matches("[data-pdv]") && (ev.key === "Enter" || ev.key === " ")) {
@@ -629,7 +661,7 @@
       const ed = rt.querySelector(".ed");
       if (pop && pop.kind === "link" && pop.state.ed === ed) return;
       rt.classList.remove("editing");
-      if (ed && ed.matches(".pded")) showDesc(ed);
+      if (ed) showDesc(ed);
     });
   });
   /* draft rows: select some text, paste a URL over it, and it becomes a named link */
@@ -1091,6 +1123,7 @@
   let drag = null;
 
   $("sched").addEventListener("pointerdown", (ev) => {
+    if (viewOnly()) return;
     const col = ev.target.closest(".col");
     if (!col || ev.target.closest(".blk")) return;
     if (msel.size) {
@@ -1331,6 +1364,7 @@
   }
 
   $("sched").addEventListener("pointerdown", (ev) => {
+    if (viewOnly()) return;
     const el = ev.target.closest(".blk");
     if (!el || ev.button !== 0 || ev.shiftKey) return;
     const L = locate(el.dataset.b);
@@ -1646,7 +1680,7 @@
     pop = null;
     $("pop").hidden = true;
     if (refocus && a && a.isConnected) a.focus();
-    else if (a && a.matches && a.matches(".pded"))
+    else if (a && a.matches && a.matches(".ed"))
       setTimeout(() => document.activeElement !== a && showDesc(a), 0);
   }
 
@@ -2546,6 +2580,8 @@
       guarded("open", t);
     } else if (t.id === "f-new") {
       guarded("new", t);
+    } else if (t.id === "f-theme") {
+      toggleTheme();
     }
   });
 
@@ -2858,6 +2894,79 @@
       : 0;
     document.documentElement.style.setProperty("--legvis", v + "px");
   }
+
+  /* Phones: View mode (the default) makes the whole page read-only, so scrolling with a thumb can't change
+     anything; links still open and tapping a block still finds its row. Edit mode works as on a computer.
+     The choice is remembered on this device. Wider screens are always editable. */
+  // Light/dark theme: the round sun/moon button left of New. Dark is the default; the choice is remembered.
+  const THEME_KEY = "trip-planner-theme";
+  function syncThemeBtn() {
+    const b = $("f-theme");
+    if (!b) return;
+    const light = document.documentElement.dataset.theme === "light";
+    const t = light ? "Switch to dark mode" : "Switch to light mode";
+    b.setAttribute("aria-label", t);
+    b.title = t;
+  }
+  function toggleTheme() {
+    const root = document.documentElement;
+    const light = root.dataset.theme !== "light";
+    root.classList.add("theme-anim");
+    if (light) root.dataset.theme = "light";
+    else delete root.dataset.theme;
+    try {
+      localStorage.setItem(THEME_KEY, light ? "light" : "dark");
+    } catch (e) {}
+    syncThemeBtn();
+    clearTimeout(toggleTheme.t);
+    toggleTheme.t = setTimeout(() => root.classList.remove("theme-anim"), 350);
+  }
+  syncThemeBtn();
+
+  const MODE_KEY = "trip-planner-mode";
+  let mode = "view";
+  try {
+    mode = localStorage.getItem(MODE_KEY) === "edit" ? "edit" : "view";
+  } catch (e) {}
+  const phone = () => matchMedia("(max-width: 760px)").matches;
+  function viewOnly() {
+    return phone() && mode === "view";
+  }
+  function applyMode() {
+    const vo = viewOnly();
+    document.body.classList.toggle("viewonly", vo);
+    document.querySelectorAll(".ed").forEach((e) => e.setAttribute("contenteditable", vo ? "false" : "true"));
+    const bar = $("modebar");
+    if (!bar) return;
+    bar.classList.toggle("edit", mode === "edit");
+    bar
+      .querySelectorAll("[data-mode]")
+      .forEach((b) => b.setAttribute("aria-checked", String(b.dataset.mode === mode)));
+  }
+  function setMode(m) {
+    if (m === mode) return;
+    mode = m;
+    try {
+      localStorage.setItem(MODE_KEY, m);
+    } catch (e) {}
+    if (viewOnly()) {
+      // leaving Edit: close whatever is being edited
+      const a = document.activeElement;
+      if (a && a !== document.body && a.blur) a.blur();
+      closePop(false);
+      drafts = {};
+      msel.clear();
+      deselectBlock();
+      renderDays();
+      renderBoard();
+    } else applyMode();
+    setStatus(m === "edit" ? "Editing is on" : "View only: nothing can be changed by accident");
+  }
+  $("modebar").addEventListener("click", (ev) => {
+    const b = ev.target.closest("[data-mode]");
+    if (b) setMode(b.dataset.mode);
+  });
+  matchMedia("(max-width: 760px)").addEventListener("change", applyMode);
 
   try {
     const ro = new ResizeObserver(measureHead);
