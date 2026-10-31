@@ -1038,10 +1038,10 @@ body::before {
   cursor: ns-resize;
   z-index: 1;
 }
-.rz.rt {
+.rz-top {
   top: 0;
 }
-.rz.rb {
+.rz-bot {
   bottom: 0;
 }
 .blk.msel {
@@ -1049,6 +1049,25 @@ body::before {
     inset 0 0 0 2px var(--panel),
     0 0 0 2px var(--fg);
   z-index: 2;
+}
+/* while one block is dragged freely, the others slide (whole, never squeezed) out of its way, and the
+   plain Hotel filler they slide over fades back so it doesn't cover them */
+.sched.free-drag .blk:not(.dragging) {
+  transition:
+    transform 0.26s cubic-bezier(0.2, 0.8, 0.2, 1),
+    opacity 0.2s ease;
+  will-change: transform;
+}
+.sched.free-drag .blk:not(.filler):not(.dragging) {
+  z-index: 1;
+}
+.sched.free-drag .col.free-target .blk.filler {
+  opacity: 0.28;
+}
+@media (prefers-reduced-motion: reduce) {
+  .sched.free-drag .blk:not(.dragging) {
+    transition: opacity 0.15s ease;
+  }
 }
 .blk.dragging {
   z-index: 5;

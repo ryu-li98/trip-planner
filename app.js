@@ -459,7 +459,7 @@
           top = (b.s - H0) * HH,
           ht = (b.e - b.s) * HH;
         const small = ht < HH * 1.4;
-        html += `<button class="blk${small ? " sm" : ""}${sel.id === b.id ? " sel" : ""}${flash === b.id ? " flash" : ""}${msel.has(b.id) ? " msel" : ""}" data-b="${b.id}" data-d="${j}" style="top:${top + 1}px;height:${ht - 2}px;background:${p.color};color:${ink(p.color)}" aria-label="${esc(b.label || p.name)} ${fmtT(b.s)} to ${fmtT(b.e)}"><span class="rz rt" aria-hidden="true"></span><span class="n">${esc(b.label || p.name)}</span>${ht >= HH * 1.9 ? `<span class="t">${fmtT(b.s)}–${fmtT(b.e)}</span>` : ""}<span class="rz rb" aria-hidden="true"></span></button>`;
+        html += `<button class="blk${small ? " sm" : ""}${isFiller(b) ? " filler" : ""}${sel.id === b.id ? " sel" : ""}${flash === b.id ? " flash" : ""}${msel.has(b.id) ? " msel" : ""}" data-b="${b.id}" data-d="${j}" style="top:${top + 1}px;height:${ht - 2}px;background:${p.color};color:${ink(p.color)}" aria-label="${esc(b.label || p.name)} ${fmtT(b.s)} to ${fmtT(b.e)}"><span class="rz rz-top" aria-hidden="true"></span><span class="n">${esc(b.label || p.name)}</span>${ht >= HH * 1.9 ? `<span class="t">${fmtT(b.s)}–${fmtT(b.e)}</span>` : ""}<span class="rz rz-bot" aria-hidden="true"></span></button>`;
       }
       html += `</div>`;
     });
@@ -1202,6 +1202,64 @@
     renderBoard();
   }
 
+  /* Dragging one block: put it at start s (keeping its length) and move the other blocks out of the way.
+     Blocks it overlaps go above or below it by which side of its middle they're on; then anything above
+     is pushed up and anything below pushed down only as far as needed. Lengths never change. Returns the
+     new times by block id, or null if something would be pushed past the start or end of the day. */
+  function ripple(d, xid, s, dur) {
+    const e = s + dur,
+      mid = (s + e) / 2,
+      above = [],
+      below = [];
+    for (const o of sorted(d)) {
+      if (o.id === xid || isFiller(o)) continue;
+      const c = { id: o.id, s: o.s, e: o.e };
+      if (o.e <= s + 1e-9) above.push(c);
+      else if (o.s >= e - 1e-9) below.push(c);
+      else ((o.s + o.e) / 2 < mid ? above : below).push(c);
+    }
+    let lim = s;
+    for (let k = above.length - 1; k >= 0; k--) {
+      const a = above[k];
+      if (a.e > lim + 1e-9) {
+        const sh = a.e - lim;
+        a.s -= sh;
+        a.e -= sh;
+      }
+      lim = Math.min(lim, a.s);
+    }
+    lim = e;
+    for (const b of below) {
+      if (b.s < lim - 1e-9) {
+        const sh = lim - b.s;
+        b.s += sh;
+        b.e += sh;
+      }
+      lim = Math.max(lim, b.e);
+    }
+    if ((above.length && above[0].s < H0 - 1e-9) || (below.length && below[below.length - 1].e > H1 + 1e-9))
+      return null;
+    const out = new Map();
+    for (const c of [...above, ...below]) out.set(c.id, c);
+    return out;
+  }
+  /* the schedule column under the pointer (falls back to the nearest one) */
+  function colAt(x) {
+    const cols = [...document.querySelectorAll("#sched .col")];
+    let best = null,
+      dist = Infinity;
+    for (const c of cols) {
+      const r = c.getBoundingClientRect();
+      if (x >= r.left && x < r.right) return c;
+      const dd = Math.min(Math.abs(x - r.left), Math.abs(x - r.right));
+      if (dd < dist) {
+        dist = dd;
+        best = c;
+      }
+    }
+    return best;
+  }
+
   function resizeBounds(d, b, edge) {
     const others = d.blocks.filter((o) => o.id !== b.id && !isFiller(o)).sort((x, y) => x.s - y.s);
     if (edge === "bot") {
@@ -1277,20 +1335,29 @@
     if (!el || ev.button !== 0 || ev.shiftKey) return;
     const L = locate(el.dataset.b);
     if (!L) return;
-    const mode = ev.target.closest(".rt") ? "top" : ev.target.closest(".rb") ? "bot" : "move";
+    let mode = ev.target.closest(".rz-top") ? "top" : ev.target.closest(".rz-bot") ? "bot" : "move";
     const group = mode === "move" ? (msel.has(L.b.id) ? new Set(msel) : new Set([L.b.id])) : null;
+    // a single block moves freely (other blocks make way, even on another day); a Shift-selected group only moves into free time
+    if (mode === "move" && group.size === 1) mode = "free";
+    const colTop = el.parentElement.getBoundingClientRect().top;
     bd = {
       mode,
       el,
       L,
       y0: ev.clientY,
+      x0: ev.clientX,
       active: false,
       s: L.b.s,
       e: L.b.e,
       dl: 0,
       group,
       range: group ? moveRange(group) : null,
-      bounds: mode === "move" ? null : resizeBounds(L.d, L.b, mode),
+      bounds: mode === "move" || mode === "free" ? null : resizeBounds(L.d, L.b, mode),
+      grab: H0 + (ev.clientY - colTop) / HH - L.b.s, // where in the block it was grabbed, in hours
+      dur: L.b.e - L.b.s,
+      j: L.j,
+      t: L.b.s,
+      layout: null,
       els: group
         ? [...group]
             .map((id) => {
@@ -1311,7 +1378,7 @@
     (bd.hist || (bd.hist = [])).push({ t: now, y: ev.clientY });
     while (bd.hist.length > 2 && now - bd.hist[0].t > 100) bd.hist.shift();
     if (!bd.active) {
-      if (Math.abs(dy) < 5) return;
+      if (Math.hypot(dy, ev.clientX - bd.x0) < 5) return;
       bd.active = true;
       try {
         $("sched").setPointerCapture(bd.pid);
@@ -1319,6 +1386,10 @@
       (bd.els ? bd.els.map((o) => o.x) : [bd.el]).forEach((x) => x.classList.add("dragging"));
     }
     const dh = dy / HH;
+    if (bd.mode === "free") {
+      freeMove(ev);
+      return;
+    }
     if (bd.mode === "move") {
       const [lo, hi] = bd.range,
         vis = soft(dh, lo, hi);
@@ -1336,6 +1407,85 @@
       placeEl(bd.el, soft(raw, min, max), bd.L.b.e, bd.s, bd.L.b.e);
     }
   });
+
+  function freeMove(ev) {
+    const B = bd,
+      sc = $("scroller"),
+      sr = sc.getBoundingClientRect();
+    // nudge the schedule sideways when dragging near its left or right edge
+    if (ev.clientX > sr.right - 40) sc.scrollLeft += 14;
+    else if (ev.clientX < sr.left + 92) sc.scrollLeft -= 14;
+    const col = colAt(ev.clientX);
+    if (!col) return;
+    const j = +col.dataset.col,
+      d = S.days[j];
+    if (B.el.parentElement !== col) {
+      // moved to another day: put the block in that column and let the old day's blocks go back
+      resetPreview(B);
+      col.appendChild(B.el);
+      B.j = j;
+      B.layout = null;
+    }
+    $("sched").classList.add("free-drag");
+    document.querySelectorAll("#sched .col.free-target").forEach((c) => c.classList.remove("free-target"));
+    col.classList.add("free-target");
+    const top = col.getBoundingClientRect().top,
+      raw = H0 + (ev.clientY - top) / HH - B.grab,
+      t = Math.max(H0, Math.min(H1 - B.dur, snapQ(raw)));
+    const lay = ripple(d, B.L.b.id, t, B.dur);
+    if (lay) {
+      B.t = t;
+      B.layout = lay;
+      // slide the others (a transform, so they move as one piece instead of being re-laid out)
+      for (const [id, c] of lay) {
+        const x = col.querySelector(`.blk[data-b="${id}"]`),
+          o = d.blocks.find((q) => q.id === id);
+        if (!x || !o) continue;
+        x.style.transform = `translateY(${(c.s - o.s) * HH}px)`;
+        const tl = x.querySelector(".t");
+        if (tl) tl.textContent = fmtT(c.s) + "–" + fmtT(c.e);
+      }
+    }
+    placeEl(B.el, soft(raw, H0, H1 - B.dur), soft(raw, H0, H1 - B.dur) + B.dur, B.t, B.t + B.dur);
+  }
+  /* put the blocks of the day being previewed back where they are in the trip */
+  function resetPreview(B) {
+    const d = S.days[B.j],
+      col = document.querySelector(`#sched .col[data-col="${B.j}"]`);
+    if (!d || !col) return;
+    for (const o of d.blocks) {
+      const x = col.querySelector(`.blk[data-b="${o.id}"]`);
+      if (!x || o.id === B.L.b.id) continue;
+      x.style.transform = "";
+      const tl = x.querySelector(".t");
+      if (tl) tl.textContent = fmtT(o.s) + "–" + fmtT(o.e);
+    }
+  }
+  function commitFree(B) {
+    const src = B.L.d,
+      dst = S.days[B.j],
+      b = B.L.b;
+    if (B.j === B.L.j && Math.abs(B.t - b.s) < 1e-9) return false;
+    if (!B.layout) B.layout = ripple(dst, b.id, B.t, B.dur);
+    if (!B.layout) return false;
+    for (const [id, c] of B.layout) {
+      const o = dst.blocks.find((x) => x.id === id);
+      if (o) {
+        o.s = c.s;
+        o.e = c.e;
+      }
+    }
+    src.blocks = src.blocks.filter((x) => x.id !== b.id);
+    b.s = B.t;
+    b.e = B.t + B.dur;
+    dst.blocks.push(b);
+    refill(dst, new Set([b.id]));
+    if (sel.id === b.id) sel.d = B.j;
+    changed(true);
+    renderDays();
+    renderBoard();
+    return true;
+  }
 
   function endBlockDrag(commit) {
     if (!bd) return;
@@ -1359,7 +1509,12 @@
       renderBoard();
       return;
     }
-    if (B.mode === "move") {
+    document.querySelectorAll("#sched .col.free-target").forEach((c) => c.classList.remove("free-target"));
+    $("sched").classList.remove("free-drag");
+    if (B.mode === "free") {
+      if (!commitFree(B)) renderBoard();
+      if (sel.id === B.L.b.id) markRow(sel.id);
+    } else if (B.mode === "move") {
       if (Math.abs(B.dl) < 1e-9) renderBoard();
       else {
         commitMove(B.group, B.dl);
